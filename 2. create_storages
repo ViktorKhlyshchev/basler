@@ -1,0 +1,58 @@
+#!/bin/bash
+trap 'ec=$?; echo "Error code $ec at line $LINENO."; exit $ec' ERR
+
+if [ $EUID != 0 ]; then
+    sudo "$0" "$@"
+    exit $?
+fi
+
+storage='nvme0n1'
+storage_sqldata='nvme0n1p1'
+storage_wwwdata='nvme0n1p2'
+
+#storage='mmcblk2'
+#storage_sqldata='mmcblk2p1'
+#storage_wwwdata='mmcblk2p2'
+
+umount --force /mnt/db   || true
+umount --force /mnt/data || true
+umount --all-targets --force /dev/$storage_sqldata || true
+umount --all-targets --force /dev/$storage_wwwdata || true
+sync
+sleep 5
+
+sed --regexp-extended -e '/\s\/mnt\/d(b|ata)\s/d' -i /etc/fstab
+sync
+
+printf '[%s] Wiping FS...\n' "$(date '+%y-%m-%d %H:%M:%S')"
+wipefs --all /dev/$storage || true
+printf '[%s] Wiped FS\n' "$(date '+%y-%m-%d %H:%M:%S')"
+sync
+sleep 5
+
+rm -rf /mnt/db
+rm -rf /mnt/data
+
+printf '[%s] Partitioning...\n' "$(date '+%y-%m-%d %H:%M:%S')"
+parted --script /dev/$storage mklabel gpt
+sleep 1
+parted --script --align=optimal /dev/$storage mkpart sqldata ext4 0% 32GiB
+sleep 1
+parted --script --align=optimal /dev/$storage mkpart wwwdata ext4 32GiB 100%
+printf '[%s] Partitioned\n' "$(date '+%y-%m-%d %H:%M:%S')"
+sleep 5
+
+printf '[%s] Making FS...\n' "$(date '+%y-%m-%d %H:%M:%S')"
+mke2fs -F -q -t ext4 -U time /dev/$storage_sqldata
+mke2fs -F -q -t ext4 -U time /dev/$storage_wwwdata
+printf '[%s] Made FS\n' "$(date '+%y-%m-%d %H:%M:%S')"
+P1_UUID=$(blkid -s UUID -o value /dev/$storage_sqldata)
+P2_UUID=$(blkid -s UUID -o value /dev/$storage_wwwdata)
+
+printf 'UUID=%s %s  ext4  auto,nofail,rw,exec,dev,suid    0 2\n' "$P1_UUID" '/mnt/db  ' | tee --append /etc/fstab
+printf 'UUID=%s %s  ext4  auto,nofail,rw,exec,dev,suid    0 2\n' "$P2_UUID" '/mnt/data' | tee --append /etc/fstab
+
+#mount -t tmpfs -o size=1G tmpfs /mnt/data/Resource/Image && mount -t tmpfs -o size=256M tmpfs /mnt/data/Resource/CafapPackage/temp && mount -t tmpfs -o size=512M tmpfs /mnt/data/Temp/FrontLogs
+
+sync
+sleep 3
